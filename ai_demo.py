@@ -1687,6 +1687,126 @@ class AIPromotionDemo:
         # Keep within reasonable bounds
         return max(1.1, min(3.0, total_impact))
 
+    def save_recommendations_to_database(self, recommendations_df):
+        """Save generated promotion recommendations to the database"""
+        if recommendations_df.empty:
+            print("❌ No recommendations to save")
+            return False
+
+        try:
+            conn = self.db.get_connection()
+            if not conn:
+                print("❌ Could not connect to database")
+                return False
+
+            cursor = conn.cursor()
+            saved_count = 0
+            skipped_count = 0
+
+            print(
+                f"\n💾 Saving {len(recommendations_df)} promotion recommendations to database..."
+            )
+
+            for _, recommendation in recommendations_df.iterrows():
+                try:
+                    # Extract promotion data
+                    code_article = recommendation.get("code_article", "N/A")
+                    if code_article == "N/A":
+                        print(f"⚠️  Skipping recommendation - missing code_article")
+                        skipped_count += 1
+                        continue
+
+                    # Calculate prices based on discount
+                    current_price = float(recommendation.get("current_price", 0))
+                    discount_rate = float(recommendation.get("suggested_discount", 0))
+                    discounted_price = current_price * (1 - discount_rate)
+
+                    # Calculate end date (start_date + duration_days)
+                    start_date = recommendation.get(
+                        "start_date", datetime.now().strftime("%Y-%m-%d")
+                    )
+                    duration_days = int(recommendation.get("duration_days", 30))
+
+                    # Parse start_date and calculate end_date
+                    if isinstance(start_date, str):
+                        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    else:
+                        start_dt = start_date
+
+                    end_dt = start_dt + timedelta(days=duration_days)
+
+                    # Check if promotion already exists for this article
+                    check_query = """
+                        SELECT COUNT(*) FROM Promotions 
+                        WHERE CodeArticle = ? AND DateFin >= GETDATE()
+                    """
+                    cursor.execute(check_query, (code_article,))
+                    existing_count = cursor.fetchone()[0]
+
+                    if existing_count > 0:
+                        print(
+                            f"⚠️  Skipping {code_article} - active promotion already exists"
+                        )
+                        skipped_count += 1
+                        continue
+
+                    # Insert promotion into database
+                    insert_query = """
+                        INSERT INTO Promotions (
+                            DateFin, TauxReduction, CodeArticle, 
+                            Prix_Vente_TND_Avant, Prix_Vente_TND_Apres,
+                            IsAccepted, DateCreation,
+                            PredictionConfidence, ExpectedVolumeImpact, ExpectedRevenueImpact
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+
+                    cursor.execute(
+                        insert_query,
+                        (
+                            end_dt,  # DateFin
+                            discount_rate,  # TauxReduction
+                            code_article,  # CodeArticle
+                            current_price,  # Prix_Vente_TND_Avant
+                            discounted_price,  # Prix_Vente_TND_Apres
+                            False,  # IsAccepted (pending approval)
+                            datetime.now(),  # DateCreation
+                            float(
+                                recommendation.get("confidence", 0)
+                            ),  # PredictionConfidence
+                            float(
+                                recommendation.get("predicted_sales_lift", 0)
+                            ),  # ExpectedVolumeImpact
+                            float(
+                                recommendation.get("expected_revenue_increase", 0)
+                            ),  # ExpectedRevenueImpact
+                        ),
+                    )
+
+                    saved_count += 1
+
+                except Exception as e:
+                    print(f"⚠️  Error saving recommendation for {code_article}: {e}")
+                    skipped_count += 1
+                    continue
+
+            # Commit all changes
+            conn.commit()
+            conn.close()
+
+            print(f"✅ Successfully saved {saved_count} promotions to database")
+            if skipped_count > 0:
+                print(
+                    f"⚠️  Skipped {skipped_count} recommendations (duplicates or errors)"
+                )
+
+            return saved_count > 0
+
+        except Exception as e:
+            print(f"❌ Error saving recommendations to database: {e}")
+            if "conn" in locals():
+                conn.close()
+            return False
+
 
 def main():
     """Run the AI promotion demo with interactive category and date selection"""
@@ -1711,7 +1831,7 @@ def main():
             # Run full analysis
             products_df, recommendations_df = demo.run_demo_with_real_data()
 
-        # Optional: Save results
+        # Optional: Save results to CSV
         try:
             if not products_df.empty:
                 products_df.to_csv("real_data_products.csv", index=False)
@@ -1726,6 +1846,29 @@ def main():
                 )
         except Exception as e:
             print(f"\n⚠️  Could not save CSV files: {e}")
+
+        # Save recommendations to database (separate from CSV saving)
+        if not recommendations_df.empty:
+            print("\n" + "=" * 60)
+            print("💾 SAVING RECOMMENDATIONS TO DATABASE")
+            print("=" * 60)
+
+            save_choice = (
+                input(
+                    "Do you want to save these recommendations to the database? (y/n): "
+                )
+                .strip()
+                .lower()
+            )
+            if save_choice == "y" or save_choice == "yes":
+                success = demo.save_recommendations_to_database(recommendations_df)
+                if success:
+                    print("✅ Recommendations successfully saved to database!")
+                    print("📋 Promotions are pending approval in the system.")
+                else:
+                    print("❌ Failed to save recommendations to database.")
+            else:
+                print("📝 Recommendations not saved to database (user choice).")
 
     except KeyboardInterrupt:
         print("\n\nDemo cancelled by user. Goodbye!")
