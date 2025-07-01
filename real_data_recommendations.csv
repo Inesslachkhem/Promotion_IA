@@ -1,0 +1,4 @@
+product_name,code_article,current_price,current_stock,should_promote,suggested_discount,confidence,reasoning
+High Performer: Jackets Item 9,9,150.21,9,False,0.0,0.95,"Product performance is satisfactory, no promotion needed"
+Needs Promotion: Jackets Item 1,1,386.2,77,True,0.291,1.0,"Promotion recommended due to: Low product rotation, Poor sell-through rate, Excess inventory"
+Random Product: Dresses Item 76,76,115.34,22,True,0.143,1.0,Promotion recommended due to: Excess inventory
