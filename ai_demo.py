@@ -882,19 +882,38 @@ class AIPromotionDemo:
         predicted_sales_lift = 0.0
 
         if should_promote:
+            # Try to use trained model first
             if self.discount_regressor:
-                optimal_discount = max(
-                    0.05, min(0.3, self.discount_regressor.predict(features_scaled)[0])
-                )
+                try:
+                    predicted_discount = self.discount_regressor.predict(
+                        features_scaled
+                    )[0]
+                    optimal_discount = max(0.05, min(0.35, predicted_discount))
+                except Exception as e:
+                    print(f"Warning: Discount regressor failed: {e}")
+                    optimal_discount = self._calculate_business_discount(product_data)
             else:
-                optimal_discount = 0.15  # Default
+                # Use business logic if no trained model
+                optimal_discount = self._calculate_business_discount(product_data)
+
+            # Ensure minimum meaningful discount
+            if optimal_discount < 0.05:
+                optimal_discount = self._calculate_business_discount(product_data)
 
             if self.impact_regressor:
-                predicted_sales_lift = max(
-                    0, self.impact_regressor.predict(features_scaled)[0]
-                )
+                try:
+                    predicted_sales_lift = max(
+                        0, self.impact_regressor.predict(features_scaled)[0]
+                    )
+                except Exception as e:
+                    print(f"Warning: Impact regressor failed: {e}")
+                    predicted_sales_lift = self._calculate_business_impact(
+                        optimal_discount, product_data
+                    )
             else:
-                predicted_sales_lift = optimal_discount * 1.8  # Estimate
+                predicted_sales_lift = self._calculate_business_impact(
+                    optimal_discount, product_data
+                )
 
         # Get key factors
         key_factors = []
@@ -1617,7 +1636,7 @@ class AIPromotionDemo:
         """Generate realistic discount based on product characteristics"""
         base_discount = 0.15  # Base 15% discount
 
-        # Adjust based on stock coverage
+        # Adjust based on stock coverage (more stock = higher discount)
         stock_coverage = row.get("stock_coverage_days", 0)
         if stock_coverage > 300:
             stock_adjustment = 0.1
@@ -1626,7 +1645,7 @@ class AIPromotionDemo:
         else:
             stock_adjustment = 0.0
 
-        # Adjust based on rotation
+        # Adjust based on rotation (lower rotation = higher discount)
         rotation = row.get("rotation", 0)
         if rotation < 0.1:
             rotation_adjustment = 0.08
@@ -1675,17 +1694,129 @@ class AIPromotionDemo:
         if rotation < 0.1:
             performance_factor = 1.3  # Poor performers benefit more
         elif rotation < 0.3:
-            performance_factor = 1.15
+            performance_factor = 1.2
         else:
             performance_factor = 1.0
 
         total_impact = base_impact * price_factor * performance_factor
-
-        # Add some randomness
-        total_impact += np.random.uniform(-0.1, 0.1)
+        total_impact = max(1.1, min(3.0, total_impact + np.random.normal(0, 0.05)))
 
         # Keep within reasonable bounds
         return max(1.1, min(3.0, total_impact))
+
+    def _calculate_business_discount(self, product_data):
+        """Calculate discount using business logic"""
+        base_discount = 0.15  # Base 15% discount
+
+        # Adjust based on stock coverage
+        stock_coverage = product_data.get("stock_coverage_days", 0)
+        if stock_coverage > 300:
+            stock_adjustment = 0.10
+        elif stock_coverage > 150:
+            stock_adjustment = 0.07
+        elif stock_coverage > 90:
+            stock_adjustment = 0.05
+        else:
+            stock_adjustment = 0.02
+
+        # Adjust based on rotation (lower rotation = higher discount)
+        rotation = product_data.get("rotation", 0)
+        if rotation < 0.1:
+            rotation_adjustment = 0.08
+        elif rotation < 0.3:
+            rotation_adjustment = 0.05
+        elif rotation < 0.5:
+            rotation_adjustment = 0.03
+        else:
+            rotation_adjustment = 0.0
+
+        # Adjust based on sell-through rate
+        sell_through = product_data.get("sell_through_rate", 0)
+        if sell_through < 0.1:
+            sell_through_adjustment = 0.05
+        elif sell_through < 0.3:
+            sell_through_adjustment = 0.03
+        else:
+            sell_through_adjustment = 0.0
+
+        # Adjust based on price (higher price = can afford higher discount)
+        price = product_data.get("current_price", 50)
+        if price > 150:
+            price_adjustment = 0.04
+        elif price > 100:
+            price_adjustment = 0.02
+        elif price > 50:
+            price_adjustment = 0.01
+        else:
+            price_adjustment = -0.01
+
+        # Adjust based on sales trend
+        sales_trend = product_data.get("sales_trend", 0)
+        if sales_trend < -0.3:
+            trend_adjustment = 0.03
+        elif sales_trend < -0.1:
+            trend_adjustment = 0.02
+        else:
+            trend_adjustment = 0.0
+
+        total_discount = (
+            base_discount
+            + stock_adjustment
+            + rotation_adjustment
+            + sell_through_adjustment
+            + price_adjustment
+            + trend_adjustment
+        )
+
+        # Ensure profit margin protection
+        profit_margin = product_data.get("profit_margin", 0.4)
+        max_safe_discount = max(0.05, profit_margin - 0.15)  # Keep at least 15% margin
+
+        # Keep within reasonable bounds
+        return max(0.08, min(max_safe_discount, total_discount))
+
+    def _calculate_business_impact(self, discount, product_data):
+        """Calculate expected sales impact using business logic"""
+        # Base impact correlated with discount
+        base_impact = discount * 2.0  # 15% discount = 30% sales increase
+
+        # Adjust based on price elasticity (higher price = more responsive to discounts)
+        price = product_data.get("current_price", 50)
+        if price > 150:
+            price_factor = 1.4  # Luxury items very responsive
+        elif price > 100:
+            price_factor = 1.3
+        elif price > 50:
+            price_factor = 1.2
+        else:
+            price_factor = 1.1
+
+        # Adjust based on current performance (poor performers benefit more)
+        rotation = product_data.get("rotation", 0)
+        if rotation < 0.1:
+            performance_factor = 1.5  # Very poor performers get big boost
+        elif rotation < 0.3:
+            performance_factor = 1.3
+        elif rotation < 0.5:
+            performance_factor = 1.2
+        else:
+            performance_factor = 1.1
+
+        # Adjust based on stock coverage (more stock = more promotion potential)
+        stock_coverage = product_data.get("stock_coverage_days", 0)
+        if stock_coverage > 300:
+            stock_factor = 1.3
+        elif stock_coverage > 150:
+            stock_factor = 1.2
+        elif stock_coverage > 90:
+            stock_factor = 1.1
+        else:
+            stock_factor = 1.0
+
+        total_impact = base_impact * price_factor * performance_factor * stock_factor
+
+        # Add some reasonable bounds (5% to 150% sales increase)
+        return max(0.05, min(1.5, total_impact))
 
     def save_recommendations_to_database(self, recommendations_df):
         """Save generated promotion recommendations to the database"""
